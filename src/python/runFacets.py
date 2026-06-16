@@ -25,7 +25,8 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(prog="Local Benchmark Run", description="Run a local benchmark on provided source dataset.")
   parser.add_argument("-s", "-source", "--source", help="Data source to run the benchmark on.")
   parser.add_argument("-searchConcurrency", "--searchConcurrency", default="-1", type=int, help="Search concurrency, 0 for disabled, -1 for using all cores")
-  parser.add_argument("-l", "--lucene-dir", default=os.environ.get("BASELINE") or "lucene_baseline", help="Path to lucene repo to be used for comparison")
+  parser.add_argument("-l", "--lucene-dir", help="Baseline lucene checkout")
+  parser.add_argument("-c", "--candidate-dir", help="Candidate lucene checkout (same commit as baseline + the change under test)")
   args = parser.parse_args()
   print("Running benchmarks with the following args: %s" % args)
 
@@ -39,6 +40,8 @@ if __name__ == "__main__":
     args.lucene_dir,
     sourceData,
     addDVFields=True,
+    addDVSkippers=True,  # index lastMod_skipper with a skip index (GITHUB#16249)
+    indexSort="lastMod_skipper:long",
     useCMS=True,
     mergePolicy="TieredMergePolicy",
     facets=(
@@ -52,9 +55,8 @@ if __name__ == "__main__":
       ("sortedset:RandomLabel", "RandomLabel"),
     ),
   )
-  # create a competitor named baseline with sources in the ../trunk folder
-  comp.competitor("post_collection_facets", args.lucene_dir, index=index, searchConcurrency=args.searchConcurrency, testContext="facetMode:POST_COLLECTION", pk=False)
-  comp.competitor("during_collection_facets", args.lucene_dir, index=index, searchConcurrency=args.searchConcurrency, testContext="facetMode:DURING_COLLECTION", pk=False)
+  # baseline vs candidate, both during-collection: only the candidate's skipper change differs
+  comp.competitor("baseline", args.lucene_dir, index=index, searchConcurrency=args.searchConcurrency, testContext="facetMode:DURING_COLLECTION", pk=False)
+  comp.competitor("candidate", args.candidate_dir, index=index, searchConcurrency=args.searchConcurrency, testContext="facetMode:DURING_COLLECTION", pk=False)
 
-  # start the benchmark - this can take long depending on your index and machines
   comp.benchmark("facet_implementations")

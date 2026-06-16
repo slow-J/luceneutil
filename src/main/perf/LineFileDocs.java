@@ -532,7 +532,14 @@ public class LineFileDocs implements Closeable {
       } else if (f instanceof SortedDocValuesField) {
         doc2.add(new SortedDocValuesField(f.name(), f.binaryValue()));
       } else if (f instanceof NumericDocValuesField) {
-        doc2.add(new NumericDocValuesField(f.name(), f.numericValue().longValue()));
+        // Preserve a doc-values skip index (e.g. lastMod_skipper) when present; the plain
+        // NumericDocValuesField ctor would silently drop it, so the GITHUB#16249 range-facet
+        // skipper would never fire.
+        if (f.fieldType().docValuesSkipIndexType() != org.apache.lucene.index.DocValuesSkipIndexType.NONE) {
+          doc2.add(NumericDocValuesField.indexedField(f.name(), f.numericValue().longValue()));
+        } else {
+          doc2.add(new NumericDocValuesField(f.name(), f.numericValue().longValue()));
+        }
       } else if (f instanceof BinaryDocValuesField) {
         doc2.add(new BinaryDocValuesField(f.name(), f.binaryValue()));
       } else if (f instanceof KnnFloatVectorField) {
