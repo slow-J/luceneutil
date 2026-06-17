@@ -18,7 +18,7 @@
 import glob
 import hashlib
 import os
-import platform
+
 import random
 import subprocess
 import time
@@ -277,11 +277,11 @@ class Index:
 
     # On macOS, truncate if the name is too long for the 255-byte filename limit.
     # Keep a prefix and append a short hash of the full name so it remains unique.
-    if platform.system() == "Darwin":
-      max_len = 200
-      if len(full_name) > max_len:
-        name_hash = hashlib.sha256(full_name.encode()).hexdigest()[:12]
-        full_name = full_name[:max_len] + "." + name_hash
+
+    max_len = 200
+    if len(full_name) > max_len:
+      name_hash = hashlib.sha256(full_name.encode()).hexdigest()[:12]
+      full_name = full_name[:max_len] + "." + name_hash
 
     return full_name
 
