@@ -42,6 +42,8 @@ if __name__ == "__main__":
     args.baseline,
     sourceData,
     addDVFields=True,
+    addDVSkippers=True,  # index lastMod_skipper with a skip index (GITHUB#16249)
+    indexSort="lastMod_skipper:long",
     useCMS=True,
     mergePolicy="TieredMergePolicy",
     facets=(
@@ -57,7 +59,9 @@ if __name__ == "__main__":
   )
 
   # create a competitor named baseline with sources in the ../trunk folder
-  comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.searchConcurrency)
+  # range facets must run DURING_COLLECTION to route through the sandbox LongRangeFacetCutter
+  # (GITHUB#16249); otherwise *:* range tasks throw "not yet supported"
+  comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.searchConcurrency, testContext="facetMode:DURING_COLLECTION", pk=False)
 
   # use the same index as baseline unless --reindex was passed.
   # create a competitor named my_modified_version (or provided candidate name) with sources in the ../patch folder
@@ -81,7 +85,7 @@ if __name__ == "__main__":
         ("sortedset:RandomLabel", "RandomLabel"),
       ),
     )
-  comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.searchConcurrency)
+  comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.searchConcurrency, testContext="facetMode:DURING_COLLECTION", pk=False)
 
   # start the benchmark - this can take long depending on your index and machines
   comp.benchmark("baseline_vs_patch")
