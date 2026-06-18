@@ -721,6 +721,20 @@ def collateTaskLatencies(resultIters):
   return iters
 
 
+def computeLatencyPercentiles(latencies):
+  # Sorts in place, then picks P0/P50/P90/P99/P999/P100 by index.
+  latencies.sort()
+  n = len(latencies)
+  return {
+    "p0": latencies[0],
+    "p50": latencies[(n - 1) // 2],
+    "p90": latencies[int((n - 1) * 0.9)],
+    "p99": latencies[int((n - 1) * 0.99)],
+    "p999": latencies[int((n - 1) * 0.999)],
+    "p100": latencies[n - 1],
+  }
+
+
 def collateResults(resultIters):
   iters = []
   for results in resultIters:
@@ -1340,30 +1354,25 @@ class RunAlgs:
       logFiles.append(logFile)
     return logFiles
 
-  def computeTaskLatencies(self, inputList, catSet):  # noqa: PLR6301
+  def computeTaskLatencies(self, inputList, catSet, aggregate=False):  # noqa: PLR6301
+    # inputList is one dict (cat -> [msec, ...]) per JVM iteration.
+    # When aggregate=False we compute percentiles per-category from whichever
+    # iteration appears last (legacy behavior). When aggregate=True we pool the
+    # msec samples across every iteration before computing percentiles, so the
+    # numbers are stable across the whole run rather than reflecting one JVM.
+    if aggregate:
+      pooled = {}
+      for currentRecord in inputList:
+        for currentKey, currentCatLatencies in currentRecord.items():
+          catSet.add(currentKey)
+          pooled.setdefault(currentKey, []).extend(currentCatLatencies)
+      return {currentKey: computeLatencyPercentiles(latencies) for currentKey, latencies in pooled.items()}
+
     resultLatencyMetrics = {}
     for currentRecord in inputList:
-      for currentKey in currentRecord.keys():
+      for currentKey, currentCatLatencies in currentRecord.items():
         catSet.add(currentKey)
-        currentCatLatencies = currentRecord[currentKey]
-        currentCatLatencies.sort()
-
-        currentLatencyMetricsDict = {}
-        resultLatencyMetrics[currentKey] = currentLatencyMetricsDict
-
-        currentP0 = currentCatLatencies[0]
-        currentP50 = currentCatLatencies[(len(currentCatLatencies) - 1) // 2]
-        currentP90 = currentCatLatencies[int((len(currentCatLatencies) - 1) * 0.9)]
-        currentP99 = currentCatLatencies[int((len(currentCatLatencies) - 1) * 0.99)]
-        currentP999 = currentCatLatencies[int((len(currentCatLatencies) - 1) * 0.999)]
-        currentP100 = currentCatLatencies[len(currentCatLatencies) - 1]
-
-        currentLatencyMetricsDict["p0"] = currentP0
-        currentLatencyMetricsDict["p50"] = currentP50
-        currentLatencyMetricsDict["p90"] = currentP90
-        currentLatencyMetricsDict["p99"] = currentP99
-        currentLatencyMetricsDict["p999"] = currentP999
-        currentLatencyMetricsDict["p100"] = currentP100
+        resultLatencyMetrics[currentKey] = computeLatencyPercentiles(currentCatLatencies)
 
     return resultLatencyMetrics
 
@@ -1621,79 +1630,94 @@ class RunAlgs:
 
     w = writer
 
-    catSet = set()
-
-    baseLatencyMetrics = self.computeTaskLatencies(baseTaskLatencies, catSet)
-    cmpLatencyMetrics = self.computeTaskLatencies(cmpTaskLatencies, catSet)
-
-    latencyLines = []
-    for currentCat in sorted(catSet):
-      if currentCat not in baseLatencyMetrics:
-        # When we add a whole new task (e.g. VectorSearch), just skip the comparison for the first nightly run
-        # since baseline will not have this task yet:
-        continue
-      currentBaseMetrics = baseLatencyMetrics[currentCat]
-      currentCmpMetrics = cmpLatencyMetrics[currentCat]
-      pctP50 = 100 * (currentCmpMetrics["p50"] - currentBaseMetrics["p50"]) / currentBaseMetrics["p50"]
-      pctP90 = 100 * (currentCmpMetrics["p90"] - currentBaseMetrics["p90"]) / currentBaseMetrics["p90"]
-      pctP99 = 100 * (currentCmpMetrics["p99"] - currentBaseMetrics["p99"]) / currentBaseMetrics["p99"]
-      pctP999 = 100 * (currentCmpMetrics["p999"] - currentBaseMetrics["p999"]) / currentBaseMetrics["p999"]
-      pctP100 = 100 * (currentCmpMetrics["p100"] - currentBaseMetrics["p100"]) / currentBaseMetrics["p100"]
-      if jira:
-        latencyLines.append(
-          "||%s||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||"
-          % (
-            currentCat,
-            currentBaseMetrics["p50"],
-            currentCmpMetrics["p50"],
-            pctP50,
-            currentBaseMetrics["p90"],
-            currentCmpMetrics["p90"],
-            pctP90,
-            currentBaseMetrics["p99"],
-            currentCmpMetrics["p99"],
-            pctP99,
-            currentBaseMetrics["p999"],
-            currentCmpMetrics["p999"],
-            pctP999,
-            currentBaseMetrics["p100"],
-            currentCmpMetrics["p100"],
-            pctP100,
+    def printLatencyTable(baseLatencyMetrics, cmpLatencyMetrics, latencyCatSet, title):
+      latencyLines = []
+      for currentCat in sorted(latencyCatSet):
+        if currentCat not in baseLatencyMetrics:
+          # When we add a whole new task (e.g. VectorSearch), just skip the comparison for the first nightly run
+          # since baseline will not have this task yet:
+          continue
+        currentBaseMetrics = baseLatencyMetrics[currentCat]
+        currentCmpMetrics = cmpLatencyMetrics[currentCat]
+        pctP50 = 100 * (currentCmpMetrics["p50"] - currentBaseMetrics["p50"]) / currentBaseMetrics["p50"]
+        pctP90 = 100 * (currentCmpMetrics["p90"] - currentBaseMetrics["p90"]) / currentBaseMetrics["p90"]
+        pctP99 = 100 * (currentCmpMetrics["p99"] - currentBaseMetrics["p99"]) / currentBaseMetrics["p99"]
+        pctP999 = 100 * (currentCmpMetrics["p999"] - currentBaseMetrics["p999"]) / currentBaseMetrics["p999"]
+        pctP100 = 100 * (currentCmpMetrics["p100"] - currentBaseMetrics["p100"]) / currentBaseMetrics["p100"]
+        if jira:
+          latencyLines.append(
+            "||%s||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||%.3f||%.3f||%.1f%%||"
+            % (
+              currentCat,
+              currentBaseMetrics["p50"],
+              currentCmpMetrics["p50"],
+              pctP50,
+              currentBaseMetrics["p90"],
+              currentCmpMetrics["p90"],
+              pctP90,
+              currentBaseMetrics["p99"],
+              currentCmpMetrics["p99"],
+              pctP99,
+              currentBaseMetrics["p999"],
+              currentCmpMetrics["p999"],
+              pctP999,
+              currentBaseMetrics["p100"],
+              currentCmpMetrics["p100"],
+              pctP100,
+            )
           )
-        )
-      else:
-        latencyLines.append(
-          "%32s%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%"
-          % (
-            currentCat,
-            currentBaseMetrics["p50"],
-            currentCmpMetrics["p50"],
-            pctP50,
-            currentBaseMetrics["p90"],
-            currentCmpMetrics["p90"],
-            pctP90,
-            currentBaseMetrics["p99"],
-            currentCmpMetrics["p99"],
-            pctP99,
-            currentBaseMetrics["p999"],
-            currentCmpMetrics["p999"],
-            pctP999,
-            currentBaseMetrics["p100"],
-            currentCmpMetrics["p100"],
-            pctP100,
+        else:
+          latencyLines.append(
+            "%32s%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%%10.3f%10.3f%8.1f%%"
+            % (
+              currentCat,
+              currentBaseMetrics["p50"],
+              currentCmpMetrics["p50"],
+              pctP50,
+              currentBaseMetrics["p90"],
+              currentCmpMetrics["p90"],
+              pctP90,
+              currentBaseMetrics["p99"],
+              currentCmpMetrics["p99"],
+              pctP99,
+              currentBaseMetrics["p999"],
+              currentCmpMetrics["p999"],
+              pctP999,
+              currentBaseMetrics["p100"],
+              currentCmpMetrics["p100"],
+              pctP100,
+            )
           )
-        )
 
-    if latencyLines:
-      if jira:
-        print("||Task||P50 Base||P50 Cmp||Diff||P90 Base||P90 Cmp||Diff||P99 Base||P99 Cmp||Diff||P999 Base||P999 Cmp||Diff||P100 Base||P100 Cmp||Diff||")
-      else:
-        print(
-          "%32s%10s%10s%9s%10s%10s%9s%10s%10s%9s%10s%10s%9s%10s%10s%9s"
-          % ("Task", "P50 B", "P50 C", "Diff", "P90 B", "P90 C", "Diff", "P99 B", "P99 C", "Diff", "P999 B", "P999 C", "Diff", "P100 B", "P100 C", "Diff")
-        )
-      for line in latencyLines:
-        print(line)
+      if latencyLines:
+        print(title)
+        if jira:
+          print("||Task||P50 Base||P50 Cmp||Diff||P90 Base||P90 Cmp||Diff||P99 Base||P99 Cmp||Diff||P999 Base||P999 Cmp||Diff||P100 Base||P100 Cmp||Diff||")
+        else:
+          print(
+            "%32s%10s%10s%9s%10s%10s%9s%10s%10s%9s%10s%10s%9s%10s%10s%9s"
+            % ("Task", "P50 B", "P50 C", "Diff", "P90 B", "P90 C", "Diff", "P99 B", "P99 C", "Diff", "P999 B", "P999 C", "Diff", "P100 B", "P100 C", "Diff")
+          )
+        for line in latencyLines:
+          print(line)
+
+    # Latency from the most recent iteration only (noisy, but matches the legacy report):
+    lastIterCatSet = set()
+    printLatencyTable(
+      self.computeTaskLatencies(baseTaskLatencies, lastIterCatSet),
+      self.computeTaskLatencies(cmpTaskLatencies, lastIterCatSet),
+      lastIterCatSet,
+      "\nLatency (ms) - last iteration only:",
+    )
+
+    # Latency pooled across all iterations (stable percentiles over the whole run):
+    aggCatSet = set()
+    printLatencyTable(
+      self.computeTaskLatencies(baseTaskLatencies, aggCatSet, aggregate=True),
+      self.computeTaskLatencies(cmpTaskLatencies, aggCatSet, aggregate=True),
+      aggCatSet,
+      "\nLatency (ms) - aggregated across all iterations:",
+    )
 
     if jira:
       w("||Task||QPS %s||StdDev %s||QPS %s||StdDev %s||Pct diff||p-value||" % (baseDesc, baseDesc, cmpDesc, cmpDesc))
